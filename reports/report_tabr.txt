@@ -1,0 +1,14 @@
+Model: tabr (TabR-lite)
+Accuracy: 0.9988 | Macro-F1: 0.9978 | Weighted-F1: 0.9988
+
+              precision    recall  f1-score   support
+
+      BENIGN     0.9996    0.9969    0.9982     38823
+  BruteForce     0.9888    0.9973    0.9930      1856
+        DDoS     0.9999    0.9999    0.9999     25603
+         DoS     0.9971    0.9996    0.9984     38847
+    PortScan     0.9999    0.9993    0.9996     18139
+
+    accuracy                         0.9988    123268
+   macro avg     0.9971    0.9986    0.9978    123268
+weighted avg     0.9988    0.9988    0.9988    123268

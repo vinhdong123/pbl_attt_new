@@ -1,0 +1,14 @@
+Model: knn
+Accuracy: 0.9991 | Macro-F1: 0.9982 | Weighted-F1: 0.9991
+
+              precision    recall  f1-score   support
+
+      BENIGN     0.9990    0.9983    0.9987     38823
+  BruteForce     0.9935    0.9941    0.9938      1856
+        DDoS     0.9998    0.9999    0.9998     25603
+         DoS     0.9986    0.9993    0.9989     38847
+    PortScan     0.9998    0.9997    0.9998     18139
+
+    accuracy                         0.9991    123268
+   macro avg     0.9982    0.9982    0.9982    123268
+weighted avg     0.9991    0.9991    0.9991    123268

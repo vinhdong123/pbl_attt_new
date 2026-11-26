@@ -1,0 +1,12 @@
+# Dataset gốc (~800 MB) — không cần đẩy để chạy dự đoán
+data/
+
+# File model KNN > 100 MB (vượt giới hạn 100 MB của GitHub; dùng Git LFS hoặc chép riêng nếu cần)
+models/knn.joblib
+
+# Python cache & file tạm
+__pycache__/
+*.py[cod]
+*.part
+venv/
+.venv/

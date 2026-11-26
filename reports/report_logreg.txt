@@ -1,0 +1,14 @@
+Model: logreg
+Accuracy: 0.9927 | Macro-F1: 0.9874 | Weighted-F1: 0.9927
+
+              precision    recall  f1-score   support
+
+      BENIGN     0.9913    0.9869    0.9891     38823
+  BruteForce     0.9662    0.9542    0.9602      1856
+        DDoS     0.9983    0.9991    0.9987     25603
+         DoS     0.9896    0.9932    0.9914     38847
+    PortScan     0.9968    0.9988    0.9978     18139
+
+    accuracy                         0.9927    123268
+   macro avg     0.9884    0.9864    0.9874    123268
+weighted avg     0.9927    0.9927    0.9927    123268

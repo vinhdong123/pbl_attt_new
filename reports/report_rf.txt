@@ -1,0 +1,14 @@
+Model: rf
+Accuracy: 0.9997 | Macro-F1: 0.9998 | Weighted-F1: 0.9997
+
+              precision    recall  f1-score   support
+
+      BENIGN     0.9996    0.9995    0.9996     38823
+  BruteForce     1.0000    1.0000    1.0000      1856
+        DDoS     1.0000    0.9999    1.0000     25603
+         DoS     0.9994    0.9997    0.9995     38847
+    PortScan     0.9999    0.9996    0.9998     18139
+
+    accuracy                         0.9997    123268
+   macro avg     0.9998    0.9997    0.9998    123268
+weighted avg     0.9997    0.9997    0.9997    123268
