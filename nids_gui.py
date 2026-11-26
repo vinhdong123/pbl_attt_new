@@ -111,13 +111,18 @@ class DetectorWorker(threading.Thread):
         n_benign, n_attack = 0, 0
         pending: list[tuple[int, dict]] = []
         t_last = time.time()
+        # Cửa sổ trượt 10s theo IP nguồn để nhận diện mẫu hành vi nhiều flow (BruteForce/PortScan/DoS)
+        from collections import defaultdict, deque
+        win_ports: dict[str, deque] = defaultdict(deque)      # src -> [(ts, dport)]
+        win_auth: dict[tuple[str, int], deque] = defaultdict(deque)  # (src, dport) -> [ts]
+        win_http: dict[str, deque] = defaultdict(deque)       # src -> [ts]
 
         def process_pending(force=False):
             """Dự đoán cả lô flow cùng lúc — nhanh hơn nhiều lần so với từng flow."""
             nonlocal n_benign, n_attack, t_last
             if not pending:
                 return
-            if not force and len(pending) < 16 and time.time() - t_last < 0.25:
+            if not force and len(pending) < 16 and time.time() - t_last < 0.15:
                 return
             take, pending[:] = pending[:512], pending[512:]
             t_last = time.time()
@@ -133,10 +138,8 @@ class DetectorWorker(threading.Thread):
             matrix = np.vstack(vecs)
             labels, confs, _proba, votes = bank.predict_batch(matrix)
             items = []
+            now_mono = time.time()
             for i, ((row_no, row), label, conf) in enumerate(zip(valid, labels, confs)):
-                is_attack = label != "BENIGN"
-                n_attack += int(is_attack)
-                n_benign += int(not is_attack)
                 detail = " ".join(f"{name}:{vote_l[i][:4]}({vote_c[i]:.2f})"
                                   for name, (vote_l, vote_c) in votes.items())
                 n_fwd = int(float(row.get("Total Fwd Packets") or 0))
@@ -151,6 +154,44 @@ class DetectorWorker(threading.Thread):
                 src_ip = row.get("Source IP") or row.get("SourceIP") or row.get("Src IP") or "-"
                 dst_ip = row.get("Destination IP") or row.get("DestIP") or row.get("Dst IP") or "-"
                 dport = row.get("Destination Port") or row.get("Dst Port") or "-"
+                try:
+                    dp_int = int(float(dport))
+                except (TypeError, ValueError):
+                    dp_int = -1
+
+                # Kết hợp hành vi đa-flow khi chạy live (giải quyết lệch RTT VMware)
+                conf_val = float(conf)
+                if self.iface and src_ip != "-" and dp_int > 0:
+                    qp = win_ports[src_ip]
+                    qp.append((now_mono, dp_int))
+                    while qp and now_mono - qp[0][0] > 10.0:
+                        qp.popleft()
+                    if dp_int in (21, 22):
+                        qa = win_auth[(src_ip, dp_int)]
+                        qa.append(now_mono)
+                        while qa and now_mono - qa[0] > 10.0:
+                            qa.popleft()
+                        if len(qa) >= 4:
+                            label = "BruteForce"
+                            conf_val = max(conf_val, 0.88)
+                            detail = f"Hybrid(auth={len(qa)}/10s) " + detail
+                    elif len({p for _, p in qp}) >= 12:
+                        label = "PortScan"
+                        conf_val = max(conf_val, 0.90)
+                        detail = f"Hybrid(ports={len({p for _, p in qp})}/10s) " + detail
+                    elif dp_int in (80, 443):
+                        qh = win_http[src_ip]
+                        qh.append(now_mono)
+                        while qh and now_mono - qh[0] > 5.0:
+                            qh.popleft()
+                        if len(qh) >= 15 and label == "BENIGN":
+                            label = "DoS"
+                            conf_val = max(conf_val, 0.82)
+                            detail = f"Hybrid(http={len(qh)}/5s) " + detail
+
+                is_attack = label != "BENIGN"
+                n_attack += int(is_attack)
+                n_benign += int(not is_attack)
                 item = {
                     "time": ts_now,
                     "src": src_ip,
@@ -158,16 +199,16 @@ class DetectorWorker(threading.Thread):
                     "port": dport,
                     "pkts": f"{pkts:,}",
                     "bytes": f"{n_bytes:,}",
-                    "label": label, "conf": float(conf), "detail": detail,
+                    "label": label, "conf": conf_val, "detail": detail,
                     "display": True,
                     "alert": None,
                     "banner": None,
                 }
-                if is_attack and conf >= self.threshold:
+                if is_attack and conf_val >= self.threshold:
                     ev = f"pkts={pkts}, bytes={n_bytes}B, SYN={syn_c}, rate={pps:.0f} pkt/s"
                     item["banner"] = f"[!] CẢNH BÁO {label} lúc {ts_now} | {src_ip} -> {dst_ip}:{dport} ({ev})"
                     item["alert"] = (
-                        f"[{ts_now}] PHÁT HIỆN {label} (conf={conf:.2f}) | {src_ip} -> {dst_ip}:{dport}\n"
+                        f"[{ts_now}] PHÁT HIỆN {label} (conf={conf_val:.2f}) | {src_ip} -> {dst_ip}:{dport}\n"
                         f"    Bằng chứng: {ev} | Model: {detail}"
                     )
                 items.append(item)

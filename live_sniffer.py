@@ -436,7 +436,7 @@ def _port_open(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
-def _start_dummy_tcp_server(port: int, banner: bytes, reply: bytes | None = None) -> bool:
+def _start_dummy_tcp_server(port: int, banner: bytes, reply: bytes | None = None, delay_s: float = 0.0) -> bool:
     """Mở server TCP nhẹ trên port (nếu service hệ thống chưa cài) để tránh RST."""
     try:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -454,11 +454,16 @@ def _start_dummy_tcp_server(port: int, banner: bytes, reply: bytes | None = None
             conn.settimeout(2.0)
             conn.sendall(banner)
             if reply is not None:
-                for _ in range(3):
+                for step in range(4):
                     data = conn.recv(512)
                     if not data:
                         break
-                    conn.sendall(reply)
+                    if delay_s > 0:
+                        time.sleep(delay_s)
+                    if port == 21 and step >= 1:
+                        conn.sendall(b"530 Login incorrect\r\n")
+                    else:
+                        conn.sendall(reply)
         except OSError:
             pass
         finally:
@@ -537,7 +542,7 @@ def ensure_lab_services() -> list[str]:
             elif port == 22:
                 ok = _start_dummy_tcp_server(22, b"SSH-2.0-OpenSSH_9.6p1 Kali-Lab\r\n")
             elif port == 21:
-                ok = _start_dummy_tcp_server(21, b"220 Kali Lab FTP Server\r\n", b"331 Password required\r\n")
+                ok = _start_dummy_tcp_server(21, b"220 Kali Lab FTP Server\r\n", b"331 Password required\r\n", delay_s=0.25)
             if ok:
                 started.append(f"{label}:PY")
     return started
