@@ -263,7 +263,7 @@ def parse_eth_packet(raw: bytes) -> tuple[str, str, int, int, int, int, int, int
 class LiveFlowSniffer:
     """Bắt gói trực tiếp trên interface và gom thành flow CIC-IDS2017."""
 
-    def __init__(self, iface: str = "any", idle_timeout: float = 2.0, active_timeout: float = 5.0):
+    def __init__(self, iface: str = "any", idle_timeout: float = 0.8, active_timeout: float = 2.0):
         self.iface = iface
         self.idle_timeout = idle_timeout
         self.active_timeout = active_timeout
@@ -340,7 +340,7 @@ class LiveFlowSniffer:
             fl = self.flows[k]
             idle = now - fl.last_ts
             active = now - fl.start_ts
-            if force or (fl.closed and idle >= 0.3) or idle >= self.idle_timeout or active >= self.active_timeout:
+            if force or (fl.closed and idle >= 0.1) or idle >= self.idle_timeout or active >= self.active_timeout:
                 self.flows.pop(k)
                 ready.append(flow_to_row(fl))
         return ready
@@ -359,7 +359,7 @@ class LiveFlowSniffer:
             raise PermissionError("Cần quyền root để bắt gói live: chạy `sudo python3 ...`") from e
         if self.iface and self.iface != "any":
             sock.bind((self.iface, 0))
-        sock.settimeout(0.5)
+        sock.settimeout(0.25)
         last_flush = time.time()
         try:
             while not stop_event.is_set():
@@ -371,7 +371,7 @@ class LiveFlowSniffer:
                 except socket.timeout:
                     pass
                 now = time.time()
-                if now - last_flush >= 0.8:
+                if now - last_flush >= 0.35:
                     last_flush = now
                     rows = self._pop_expired(now)
                     if rows:

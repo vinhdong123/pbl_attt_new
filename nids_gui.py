@@ -139,18 +139,37 @@ class DetectorWorker(threading.Thread):
                 n_benign += int(not is_attack)
                 detail = " ".join(f"{name}:{vote_l[i][:4]}({vote_c[i]:.2f})"
                                   for name, (vote_l, vote_c) in votes.items())
+                n_fwd = int(float(row.get("Total Fwd Packets") or 0))
+                n_bwd = int(float(row.get("Total Backward Packets") or 0))
+                b_fwd = int(float(row.get("Total Length of Fwd Packets") or 0))
+                b_bwd = int(float(row.get("Total Length of Bwd Packets") or 0))
+                syn_c = int(float(row.get("SYN Flag Count") or 0))
+                pps = float(row.get("Flow Packets/s") or 0)
+                pkts = n_fwd + n_bwd
+                n_bytes = b_fwd + b_bwd
+                ts_now = row.get("Timestamp") or row.get("Flow ID") or time.strftime("%H:%M:%S")
+                src_ip = row.get("Source IP") or row.get("SourceIP") or row.get("Src IP") or "-"
+                dst_ip = row.get("Destination IP") or row.get("DestIP") or row.get("Dst IP") or "-"
+                dport = row.get("Destination Port") or row.get("Dst Port") or "-"
                 item = {
-                    "time": row.get("Timestamp") or row.get("Flow ID") or time.strftime("%H:%M:%S"),
-                    "src": row.get("Source IP") or row.get("SourceIP") or row.get("Src IP") or "-",
-                    "dst": row.get("Destination IP") or row.get("DestIP") or row.get("Dst IP") or "-",
-                    "port": row.get("Destination Port") or row.get("Dst Port") or "-",
+                    "time": ts_now,
+                    "src": src_ip,
+                    "dst": dst_ip,
+                    "port": dport,
+                    "pkts": f"{pkts:,}",
+                    "bytes": f"{n_bytes:,}",
                     "label": label, "conf": float(conf), "detail": detail,
-                    "display": is_attack or self.show_benign,
+                    "display": True,
                     "alert": None,
+                    "banner": None,
                 }
                 if is_attack and conf >= self.threshold:
-                    item["alert"] = (f"{time.strftime('%H:%M:%S')}  CANH BAO {label}  "
-                                     f"conf={conf:.2f}  {item['src']} -> {item['dst']}:{item['port']}")
+                    ev = f"pkts={pkts}, bytes={n_bytes}B, SYN={syn_c}, rate={pps:.0f} pkt/s"
+                    item["banner"] = f"[!] CẢNH BÁO {label} lúc {ts_now} | {src_ip} -> {dst_ip}:{dport} ({ev})"
+                    item["alert"] = (
+                        f"[{ts_now}] PHÁT HIỆN {label} (conf={conf:.2f}) | {src_ip} -> {dst_ip}:{dport}\n"
+                        f"    Bằng chứng: {ev} | Model: {detail}"
+                    )
                 items.append(item)
             if items:
                 self.event_q.put(("batch", items))
@@ -234,7 +253,7 @@ class App(tk.Tk):
         tk.Label(self, textvariable=self.status, anchor="w", bg=BG, fg=MUTED,
                  font=(FONT_UI, 9)).pack(fill="x", padx=12, pady=(0, 6))
 
-        self.after(400, self._poll_events)
+        self.after(150, self._poll_events)
         self._refresh_tab1()
         self._refresh_tab2()
         if not HAS_MPL_TK:
@@ -600,11 +619,12 @@ class App(tk.Tk):
         self.btn_stop = ttk.Button(ctrl, text="Tạm dừng", command=self._stop_monitor,
                                    state="disabled")
         self.btn_stop.pack(side="left")
+        ttk.Button(ctrl, text="Reset", command=self._reset_monitor).pack(side="left", padx=4)
         ttk.Button(ctrl, text="Phát lại CSV...", command=self._pick_replay).pack(side="left",
-                                                                                 padx=6)
+                                                                                 padx=4)
 
         tk.Label(ctrl, text="Ngưỡng:", bg=BG, fg=FG).pack(side="left", padx=(10, 2))
-        self.var_threshold = tk.StringVar(value="0.50")
+        self.var_threshold = tk.StringVar(value="0.35")
         ttk.Spinbox(ctrl, from_=0.1, to=0.99, increment=0.05, width=5,
                     textvariable=self.var_threshold).pack(side="left")
         self.var_show_benign = tk.BooleanVar(value=False)
@@ -614,31 +634,32 @@ class App(tk.Tk):
         body = tk.Frame(f, bg=BG)
         body.pack(fill="both", expand=True, padx=10, pady=4)
 
-        # trái: bảng lưu lượng real-time
+        # trái: bảng lưu lượng real-time (chỉ hiện lưu lượng chạy, không hiện cột dự đoán)
         left = tk.Frame(body, bg=BG)
         left.pack(side="left", fill="both", expand=True)
-        tk.Label(left, text="Lưu lượng đến (Real-time):", bg=BG, fg=FG,
+        tk.Label(left, text="Lưu lượng mạng đang chạy (Real-time):", bg=BG, fg=FG,
                  font=(FONT_UI, 9, "bold")).pack(anchor="w")
-        cols = ("time", "src", "dst", "port", "pred", "conf", "detail")
+        cols = ("time", "src", "dst", "port", "pkts", "bytes")
         self.tree_flow = ttk.Treeview(left, columns=cols, show="headings", height=18)
-        for cid, txt, w in zip(cols, ("Thời gian", "Nguồn", "Đích", "Port", "Dự đoán",
-                                      "Conf", "Chi tiết model"),
-                               (75, 115, 115, 55, 85, 55, 245)):
+        for cid, txt, w in zip(cols, ("Thời gian", "Nguồn", "Đích", "Port", "Gói tin", "Dung lượng (B)"),
+                               (80, 130, 130, 65, 80, 105)):
             self.tree_flow.heading(cid, text=txt)
             self.tree_flow.column(cid, width=w, anchor="w")
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree_flow.yview)
         self.tree_flow.configure(yscrollcommand=vsb.set)
         self.tree_flow.pack(side="left", fill="both", expand=True)
         vsb.pack(side="left", fill="y")
-        self.tree_flow.tag_configure("benign", background="#f9fafb", foreground=OKG)
-        for lbl, color in ATTACK_COLOR.items():
-            self.tree_flow.tag_configure(lbl, background="#fef2f2", foreground=color)
-        self.tree_flow.tag_configure("attackbg", background="#fef2f2", foreground=BAD)
+        self.tree_flow.tag_configure("flow", background=PANEL, foreground=FG)
 
-        # phải: cảnh báo + bộ đếm + biểu đồ
+        # phải: banner cảnh báo tự động + log bằng chứng + bộ đếm + biểu đồ
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(10, 0))
-        tk.Label(right, text="CẢNH BÁO TẤN CÔNG:", bg=BG, fg=BAD,
+        self.lbl_alert_banner = tk.Label(
+            right, text="Trạng thái: An toàn — Chưa phát hiện tấn công",
+            bg="#f3f4f6", fg=OKG, anchor="w", padx=8, pady=5,
+            font=(FONT_UI, 9, "bold"), relief="solid", borderwidth=1)
+        self.lbl_alert_banner.pack(fill="x", pady=(0, 6))
+        tk.Label(right, text="CẢNH BÁO TẤN CÔNG (Thời gian & Bằng chứng):", bg=BG, fg=BAD,
                  font=(FONT_UI, 10, "bold")).pack(anchor="w")
         self.txt_alert = scrolledtext.ScrolledText(right, width=58, height=10, bg="#fef2f2",
                                                    fg="#991b1b", insertbackground=FG,
@@ -709,6 +730,20 @@ class App(tk.Tk):
         self.btn_start["state"], self.btn_live["state"], self.btn_stop["state"] = "normal", "normal", "disabled"
         self.set_status("Đang tạm dừng ...")
 
+    def _reset_monitor(self):
+        """Xóa sạch bảng lưu lượng, log cảnh báo, bộ đếm và biểu đồ để thử lại từ đầu."""
+        self.n_benign, self.n_attack = 0, 0
+        self.counts.clear()
+        self.tree_flow.delete(*self.tree_flow.get_children())
+        self.txt_alert.delete("1.0", "end")
+        self.lbl_benign["text"] = "Benign: 0"
+        self.lbl_attack["text"] = "Attack: 0"
+        self.lbl_alert_banner.configure(
+            text="Trạng thái: An toàn — Chưa phát hiện tấn công",
+            bg="#f3f4f6", fg=OKG)
+        self._draw_live_chart()
+        self.set_status("Đã reset bộ đếm và nhật ký — sẵn sàng bắt lại từ đầu.")
+
     # ------------------------------------------------------------------ sự kiện
     def _poll_events(self):
         try:
@@ -732,7 +767,7 @@ class App(tk.Tk):
             pass
         except tk.TclError:
             return  # cửa sổ đang đóng
-        self.after(400, self._poll_events)
+        self.after(150, self._poll_events)
 
     def _handle_batch(self, rows: list[dict]):
         try:
@@ -749,14 +784,15 @@ class App(tk.Tk):
                 self.n_attack += 1
                 self.counts[item["label"]] = self.counts.get(item["label"], 0) + 1
             if item.get("alert"):
+                self.lbl_alert_banner.configure(
+                    text=item.get("banner") or "PHÁT HIỆN TẤN CÔNG!",
+                    bg="#fee2e2", fg=BAD)
                 self.txt_alert.insert("end", item["alert"] + "\n")
                 self.txt_alert.see("end")
             if item.get("display"):
-                tag = "benign" if item["label"] == "BENIGN" else \
-                    (item["label"] if item["label"] in ATTACK_COLOR else "attackbg")
                 self.tree_flow.insert("", 0, values=(
                     item["time"], item["src"], item["dst"], item["port"],
-                    item["label"], f"{item['conf']:.2f}", item["detail"]), tags=(tag,))
+                    item["pkts"], item["bytes"]), tags=("flow",))
                 children_added = True
         # giữ tối đa 400 dòng hiển thị
         kids = self.tree_flow.get_children()
