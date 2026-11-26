@@ -185,9 +185,14 @@ class DetectorWorker(threading.Thread):
                         while qh and now_mono - qh[0] > 5.0:
                             qh.popleft()
                         if len(qh) >= 15 and label == "BENIGN":
-                            label = "DoS"
-                            conf_val = max(conf_val, 0.82)
-                            detail = f"Hybrid(http={len(qh)}/5s) " + detail
+                            if n_bytes == 0 and syn_c >= 1:
+                                label = "DDoS"
+                                conf_val = max(conf_val, 0.88)
+                                detail = f"Hybrid(syn_flood={len(qh)}/5s) " + detail
+                            else:
+                                label = "DoS"
+                                conf_val = max(conf_val, 0.82)
+                                detail = f"Hybrid(http={len(qh)}/5s) " + detail
 
                 is_attack = label != "BENIGN"
                 n_attack += int(is_attack)
