@@ -93,13 +93,15 @@ class DetectorWorker(threading.Thread):
 
     def __init__(self, models_dir: Path, flow_dir: Path, replay_path: Path | None,
                  threshold: float, show_benign: bool, speed: float,
-                 event_q: "q.Queue", stop_event: threading.Event, iface: str | None = None):
+                 event_q: "q.Queue", stop_event: threading.Event, iface: str | None = None,
+                 reset_event: threading.Event | None = None):
         super().__init__(daemon=True)
         self.models_dir, self.flow_dir = models_dir, flow_dir
         self.replay_path, self.threshold = replay_path, threshold
         self.show_benign, self.speed = show_benign, speed
         self.event_q, self.stop_event = event_q, stop_event
         self.iface = iface
+        self.reset_event = reset_event
 
     def run(self):
         try:
@@ -117,9 +119,20 @@ class DetectorWorker(threading.Thread):
         win_auth: dict[tuple[str, int], deque] = defaultdict(deque)  # (src, dport) -> [ts]
         win_http: dict[str, deque] = defaultdict(deque)       # src -> [ts]
 
+        def _check_reset(sniffer_obj=None):
+            if self.reset_event and self.reset_event.is_set():
+                pending.clear()
+                win_ports.clear()
+                win_auth.clear()
+                win_http.clear()
+                if sniffer_obj is not None:
+                    sniffer_obj.flows.clear()
+                self.reset_event.clear()
+
         def process_pending(force=False):
             """Dự đoán cả lô flow cùng lúc — nhanh hơn nhiều lần so với từng flow."""
             nonlocal n_benign, n_attack, t_last
+            _check_reset()
             if not pending:
                 return
             if not force and len(pending) < 16 and time.time() - t_last < 0.15:
@@ -159,14 +172,10 @@ class DetectorWorker(threading.Thread):
                 except (TypeError, ValueError):
                     dp_int = -1
 
-                # Kết hợp hành vi đa-flow khi chạy live (giải quyết lệch RTT VMware)
+                # Kết hợp hành vi đa-flow khi chạy live (bỏ qua DNS port 53 và gói phản hồi không có SYN)
                 conf_val = float(conf)
-                if self.iface and src_ip != "-" and dp_int > 0:
-                    qp = win_ports[src_ip]
-                    qp.append((now_mono, dp_int))
-                    while qp and now_mono - qp[0][0] > 10.0:
-                        qp.popleft()
-                    if dp_int in (21, 22):
+                if self.iface and src_ip != "-" and dp_int > 0 and dp_int != 53:
+                    if dp_int in (21, 22) and syn_c >= 1:
                         qa = win_auth[(src_ip, dp_int)]
                         qa.append(now_mono)
                         while qa and now_mono - qa[0] > 10.0:
@@ -175,10 +184,15 @@ class DetectorWorker(threading.Thread):
                             label = "BruteForce"
                             conf_val = max(conf_val, 0.88)
                             detail = f"Hybrid(auth={len(qa)}/10s) " + detail
-                    elif len({p for _, p in qp}) >= 12:
-                        label = "PortScan"
-                        conf_val = max(conf_val, 0.90)
-                        detail = f"Hybrid(ports={len({p for _, p in qp})}/10s) " + detail
+                    elif syn_c >= 1 and dp_int not in (80, 443):
+                        qp = win_ports[src_ip]
+                        qp.append((now_mono, dp_int))
+                        while qp and now_mono - qp[0][0] > 10.0:
+                            qp.popleft()
+                        if len({p for _, p in qp}) >= 12:
+                            label = "PortScan"
+                            conf_val = max(conf_val, 0.90)
+                            detail = f"Hybrid(ports={len({p for _, p in qp})}/10s) " + detail
                     elif dp_int in (80, 443):
                         qh = win_http[src_ip]
                         qh.append(now_mono)
@@ -227,6 +241,7 @@ class DetectorWorker(threading.Thread):
                 for rows in sniffer.stream_flows(self.stop_event):
                     if self.stop_event.is_set():
                         break
+                    _check_reset(sniffer)
                     for row in rows:
                         pending.append((0, row))
                     process_pending(force=True)
@@ -276,6 +291,7 @@ class App(tk.Tk):
         self._setup_style()
         self.event_q: "q.Queue" = q.Queue(maxsize=4000)
         self.stop_event = threading.Event()
+        self.reset_event = threading.Event()
         self.worker = None
         self.counts: dict[str, int] = {}
         self.n_benign, self.n_attack = 0, 0
@@ -763,11 +779,13 @@ class App(tk.Tk):
             messagebox.showinfo("Đang chạy", "Bộ phát hiện đang chạy. Nhấn 'Tạm dừng' trước.")
             return
         self.stop_event.clear()
+        self.reset_event.clear()
         self.event_q = q.Queue(maxsize=4000)
         self.worker = DetectorWorker(
             ROOT / "models", Path(self.var_dir.get()).expanduser(), replay,
             float(self.var_threshold.get()), self.var_show_benign.get(),
-            speed=0, event_q=self.event_q, stop_event=self.stop_event, iface=iface)
+            speed=0, event_q=self.event_q, stop_event=self.stop_event, iface=iface,
+            reset_event=self.reset_event)
         self.worker.start()
         self.btn_start["state"], self.btn_live["state"], self.btn_stop["state"] = "disabled", "disabled", "normal"
 
@@ -777,7 +795,13 @@ class App(tk.Tk):
         self.set_status("Đang tạm dừng ...")
 
     def _reset_monitor(self):
-        """Xóa sạch bảng lưu lượng, log cảnh báo, bộ đếm và biểu đồ để thử lại từ đầu."""
+        """Xóa sạch hàng đợi, bộ nhớ đệm worker, bảng lưu lượng, log cảnh báo, bộ đếm và biểu đồ."""
+        self.reset_event.set()
+        try:
+            while True:
+                self.event_q.get_nowait()
+        except q.Empty:
+            pass
         self.n_benign, self.n_attack = 0, 0
         self.counts.clear()
         self.tree_flow.delete(*self.tree_flow.get_children())
@@ -788,7 +812,7 @@ class App(tk.Tk):
             text="Trạng thái: An toàn — Chưa phát hiện tấn công",
             bg="#f3f4f6", fg=OKG)
         self._draw_live_chart()
-        self.set_status("Đã reset bộ đếm và nhật ký — sẵn sàng bắt lại từ đầu.")
+        self.set_status("Đã reset sạch bộ đếm, bộ đệm và nhật ký — sẵn sàng bắt lại từ đầu.")
 
     # ------------------------------------------------------------------ sự kiện
     def _poll_events(self):
